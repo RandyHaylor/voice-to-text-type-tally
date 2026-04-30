@@ -21,7 +21,22 @@ Write-Host "==> Installing $gitHubRepoOwnerAndName $ReleaseTag to: $installFullP
 # 1. Verify Python is available.
 $pythonExecutable = (Get-Command python -ErrorAction SilentlyContinue)
 if (-not $pythonExecutable) {
-    Write-Error "Python is not on PATH. Install Python 3.11+ from https://www.python.org/ then re-run this installer."
+    Write-Host ""
+    Write-Host "==========================================================" -ForegroundColor Red
+    Write-Host " ERROR: Python was not found on PATH." -ForegroundColor Red
+    Write-Host "==========================================================" -ForegroundColor Red
+    Write-Host ""
+    Write-Host "This installer needs Python 3.11 or newer. Please:"
+    Write-Host ""
+    Write-Host "  1. Download Python from https://www.python.org/downloads/windows/"
+    Write-Host "  2. Run the installer. On the first screen, MAKE SURE the box"
+    Write-Host "     'Add python.exe to PATH' is CHECKED before clicking Install Now."
+    Write-Host "  3. After Python finishes installing, OPEN A NEW terminal/PowerShell"
+    Write-Host "     window so PATH is refreshed."
+    Write-Host "  4. Re-run this installer."
+    Write-Host ""
+    Write-Host "Press any key to exit..." -ForegroundColor Yellow
+    [void][System.Console]::ReadKey($true)
     exit 1
 }
 Write-Host "    Python: $($pythonExecutable.Source)"

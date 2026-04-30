@@ -22,10 +22,22 @@ fi
 # Pin to a single GPU. Override at the command line if needed.
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 
-WHISPER_MODEL="${WHISPER_MODEL:-small}"
+WHISPER_MODEL="${WHISPER_MODEL:-base}"
 WHISPER_LANGUAGE="${WHISPER_LANGUAGE:-en}"
 SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
 SERVER_PORT="${SERVER_PORT:-43007}"
+
+# Prefer the locally-bundled model in <repo>/models/<size>/ if present.
+# Falls back to HF Hub download (cached at ~/.cache/huggingface/) if not.
+LOCAL_MODEL_DIRECTORY="$SCRIPT_DIR/models/$WHISPER_MODEL"
+WHISPER_ONLINE_SERVER_MODEL_ARGS=()
+if [[ -f "$LOCAL_MODEL_DIRECTORY/model.bin" ]]; then
+    echo "[server] using local model files at $LOCAL_MODEL_DIRECTORY"
+    WHISPER_ONLINE_SERVER_MODEL_ARGS=(--model_dir "$LOCAL_MODEL_DIRECTORY")
+else
+    echo "[server] local model dir not found; will download/use HF cache for '$WHISPER_MODEL'"
+    WHISPER_ONLINE_SERVER_MODEL_ARGS=(--model "$WHISPER_MODEL")
+fi
 
 cd "$WHISPER_STREAMING_DIR"
 
@@ -34,7 +46,7 @@ python3 whisper_online_server.py \
     --host "$SERVER_HOST" \
     --port "$SERVER_PORT" \
     --backend faster-whisper \
-    --model "$WHISPER_MODEL" \
+    "${WHISPER_ONLINE_SERVER_MODEL_ARGS[@]}" \
     --lan "$WHISPER_LANGUAGE" \
     --min-chunk-size 0.5 \
     --buffer_trimming segment \

@@ -1,20 +1,20 @@
 """
-Hotkey controller for the whisper_streaming mic client.
+Hotkey controller for the whisper_streaming voice-to-text family.
 
-  Ctrl+F12 → start mic streaming + auto-typing
-  Shift+F12 → stop
-  Ctrl+C in this terminal → exit
+  Ctrl+F12              -> mic dictation, types into focused window via Ctrl+V
+  Ctrl+Shift+F12        -> mic dictation, types via Ctrl+Shift+V (terminals)
+  Ctrl+Alt+F12          -> system audio (default sink monitor) -> console + file
+  Ctrl+Alt+Shift+F12    -> mic + system audio mixed -> console + file
+  Shift+F12             -> stop whatever is running
+  Ctrl+C in this terminal -> exit
 
-Assumes the whisper_streaming server is already running on 127.0.0.1:43007
-(launched separately via launch_whisper_streaming_server.sh).
+Modes are mutually exclusive: only ONE pipeline runs at a time. Pressing a
+new mode hotkey while another is running is a no-op (use Shift+F12 to stop
+first, then start the new mode). This avoids audio devices being grabbed by
+two pipelines at once.
 
-What "start" does: spawns the existing
-  launch_whisper_streaming_mic_client_with_typing.sh
-as a subprocess, which streams default mic to the server and types committed
-text into the focused window.
-
-What "stop" does: terminates that subprocess (and its child ffmpeg/nc/python
-processes via process group).
+The whisper_streaming server must be running separately on 127.0.0.1:43007
+(use launch_whisper_streaming_server.sh).
 """
 
 import os
@@ -27,37 +27,82 @@ from pynput import keyboard as pynput_keyboard
 
 
 SCRIPT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
-MIC_CLIENT_LAUNCHER_PATH = os.path.join(
-    SCRIPT_DIRECTORY,
-    "launch_whisper_streaming_mic_client_with_typing.sh",
-)
-START_HOTKEY = "<ctrl>+<f12>"
+
+LAUNCHER_PATHS_BY_MODE_LABEL = {
+    "mic-typing-ctrl-v": os.path.join(
+        SCRIPT_DIRECTORY,
+        "launch_whisper_streaming_mic_client_with_typing.sh",
+    ),
+    "mic-typing-ctrl-shift-v": os.path.join(
+        SCRIPT_DIRECTORY,
+        # NOTE: this currently uses xdotool type (not Ctrl+Shift+V) under
+        # the hood. If you want a true Ctrl+Shift+V paste, swap the
+        # launcher's emitter call. Functionally types into terminals fine.
+        "launch_whisper_streaming_mic_client_with_typing.sh",
+    ),
+    "system-audio-to-console-and-file": os.path.join(
+        SCRIPT_DIRECTORY,
+        "launch_whisper_streaming_system_audio_to_console_and_file.sh",
+    ),
+    "mic-plus-system-to-console-and-file": os.path.join(
+        SCRIPT_DIRECTORY,
+        "launch_whisper_streaming_mic_plus_system_to_console_and_file.sh",
+    ),
+}
+
+HOTKEY_TO_MODE_LABEL = {
+    "<ctrl>+<f12>": "mic-typing-ctrl-v",
+    "<ctrl>+<shift>+<f12>": "mic-typing-ctrl-shift-v",
+    "<ctrl>+<alt>+<f12>": "system-audio-to-console-and-file",
+    "<ctrl>+<alt>+<shift>+<f12>": "mic-plus-system-to-console-and-file",
+}
+
 STOP_HOTKEY = "<shift>+<f12>"
+
+HUMAN_READABLE_HOTKEY_HELP_LINES = [
+    "  Ctrl+F12              -> mic dictation, types into focused window",
+    "  Ctrl+Shift+F12        -> mic dictation (same; reserved for terminal paste mode)",
+    "  Ctrl+Alt+F12          -> system audio -> ~/vtt_recordings/*.txt",
+    "  Ctrl+Alt+Shift+F12    -> mic + system audio mixed -> ~/vtt_recordings/*.txt",
+    "  Shift+F12             -> stop whatever is running",
+]
 
 
 class WhisperStreamingHotkeyController:
     def __init__(self):
         self.active_subprocess_or_none = None
+        self.active_mode_label_or_none = None
         self.subprocess_state_lock = threading.Lock()
 
-    def on_start_hotkey_pressed(self):
+    def on_mode_hotkey_pressed(self, requested_mode_label):
         with self.subprocess_state_lock:
             if self.active_subprocess_or_none is not None:
-                print("[start] already streaming.", flush=True)
+                print(
+                    f"[start] already running mode "
+                    f"'{self.active_mode_label_or_none}' — press Shift+F12 to "
+                    f"stop before switching.",
+                    flush=True,
+                )
                 return
-            print("\n[start] launching mic client...", flush=True)
+            launcher_path = LAUNCHER_PATHS_BY_MODE_LABEL[requested_mode_label]
+            print(f"\n[start] mode={requested_mode_label}", flush=True)
             self.active_subprocess_or_none = subprocess.Popen(
-                [MIC_CLIENT_LAUNCHER_PATH],
-                # New process group so we can SIGTERM the whole pipeline at once.
+                [launcher_path],
+                # New process group so SIGTERM hits the whole pipeline.
                 preexec_fn=os.setsid,
             )
+            self.active_mode_label_or_none = requested_mode_label
 
     def on_stop_hotkey_pressed(self):
         with self.subprocess_state_lock:
             if self.active_subprocess_or_none is None:
                 print("[stop] already stopped.", flush=True)
                 return
-            print("[stop] terminating mic client...", flush=True)
+            print(
+                f"[stop] terminating mode "
+                f"'{self.active_mode_label_or_none}'...",
+                flush=True,
+            )
             try:
                 os.killpg(
                     os.getpgid(self.active_subprocess_or_none.pid),
@@ -73,16 +118,30 @@ class WhisperStreamingHotkeyController:
                     signal.SIGKILL,
                 )
             self.active_subprocess_or_none = None
+            self.active_mode_label_or_none = None
             print("[stop] done.", flush=True)
 
     def run_until_interrupted(self):
-        print(f"[ready] {START_HOTKEY} = start streaming | "
-              f"{STOP_HOTKEY} = stop. Ctrl+C here to exit.",
-              flush=True)
-        with pynput_keyboard.GlobalHotKeys({
-            START_HOTKEY: self.on_start_hotkey_pressed,
-            STOP_HOTKEY: self.on_stop_hotkey_pressed,
-        }) as hotkey_listener:
+        print("", flush=True)
+        print("=" * 60, flush=True)
+        print(" Voice-to-Text (vtt) — global hotkeys:", flush=True)
+        print("=" * 60, flush=True)
+        for help_line in HUMAN_READABLE_HOTKEY_HELP_LINES:
+            print(help_line, flush=True)
+        print("=" * 60, flush=True)
+        print(" Ctrl+C in this terminal to exit the controller.", flush=True)
+        print("", flush=True)
+
+        global_hotkey_callback_map = {
+            hotkey_string: (lambda mode=mode_label:
+                             self.on_mode_hotkey_pressed(mode))
+            for hotkey_string, mode_label in HOTKEY_TO_MODE_LABEL.items()
+        }
+        global_hotkey_callback_map[STOP_HOTKEY] = self.on_stop_hotkey_pressed
+
+        with pynput_keyboard.GlobalHotKeys(
+            global_hotkey_callback_map
+        ) as hotkey_listener:
             hotkey_listener.join()
 
 

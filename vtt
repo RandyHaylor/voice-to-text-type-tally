@@ -1,0 +1,44 @@
+#!/bin/bash
+# `vtt` entry point: ensures the whisper_streaming server is running on
+# 127.0.0.1:43007 (starts it in a background terminal if not), then runs
+# the hotkey controller in the foreground.
+#
+# Symlink this file into a directory on your PATH (e.g. ~/util_scripts/vtt)
+# so you can launch the whole voice-to-text app from anywhere by typing
+# `vtt`.
+
+set -e
+VTT_REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
+SERVER_PORT="${SERVER_PORT:-43007}"
+
+# Probe the server port. nc -z exits 0 if something is listening.
+if nc -z "$SERVER_HOST" "$SERVER_PORT" 2>/dev/null; then
+    echo "[vtt] whisper_streaming server already up at $SERVER_HOST:$SERVER_PORT"
+else
+    echo "[vtt] starting whisper_streaming server in a new gnome-terminal window..."
+    if command -v gnome-terminal >/dev/null 2>&1; then
+        gnome-terminal --title="vtt-server" -- bash -lc \
+            "$VTT_REPO_DIR/launch_whisper_streaming_server.sh; exec bash" \
+            >/dev/null 2>&1 &
+    else
+        # Headless fallback: launch in background, dump server logs to a file
+        # under ~/vtt_recordings.
+        mkdir -p "$HOME/vtt_recordings"
+        VTT_SERVER_LOG="$HOME/vtt_recordings/vtt_server_$(date +%Y%m%d_%H%M%S).log"
+        echo "[vtt] no gnome-terminal; logging server output to $VTT_SERVER_LOG"
+        nohup "$VTT_REPO_DIR/launch_whisper_streaming_server.sh" \
+            >"$VTT_SERVER_LOG" 2>&1 &
+    fi
+    echo "[vtt] waiting for server to bind port..."
+    for waited_seconds in $(seq 1 60); do
+        if nc -z "$SERVER_HOST" "$SERVER_PORT" 2>/dev/null; then
+            echo "[vtt] server up after ${waited_seconds}s"
+            break
+        fi
+        sleep 1
+    done
+fi
+
+echo "[vtt] launching hotkey controller (Ctrl+C here to exit)"
+exec python3 "$VTT_REPO_DIR/whisper_streaming_hotkey_controller.py"

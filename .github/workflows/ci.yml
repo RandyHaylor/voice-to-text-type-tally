@@ -91,17 +91,17 @@ jobs:
         run: choco install -y ffmpeg
         shell: pwsh
 
-      - name: Install AutoHotkey v2 (direct download)
+      - name: Install AutoHotkey v2 (GitHub release)
         shell: pwsh
         run: |
-          # Chocolatey's "autohotkey" package is v1; v2 isn't packaged under
-          # that name. Download the official v2 portable zip from
-          # autohotkey.com and extract to a known location.
+          # Chocolatey's "autohotkey" package is v1; v2 isn't there.
+          # autohotkey.com Cloudflare-blocks GH Actions runner IPs, so pull
+          # the v2 zip from the official AutoHotkey/AutoHotkey GitHub release.
           $autoHotkeyV2Version = "2.0.18"
-          $downloadUrl = "https://www.autohotkey.com/download/ahk-v2-$autoHotkeyV2Version.zip"
+          $downloadUrl = "https://github.com/AutoHotkey/AutoHotkey/releases/download/v$autoHotkeyV2Version/AutoHotkey_$autoHotkeyV2Version.zip"
           $downloadZipPath = "$env:RUNNER_TEMP\ahk-v2.zip"
           $extractDirectory = "C:\AutoHotkeyV2"
-          Invoke-WebRequest -Uri $downloadUrl -OutFile $downloadZipPath
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $downloadZipPath -UseBasicParsing
           Expand-Archive -Path $downloadZipPath -DestinationPath $extractDirectory -Force
           Get-ChildItem $extractDirectory | Format-Table Name, Length
 

@@ -51,20 +51,20 @@ LAUNCHER_PATHS_BY_MODE_LABEL = {
 }
 
 HOTKEY_TO_MODE_LABEL = {
-    "<ctrl>+<f12>": "mic-typing-ctrl-v",
-    "<ctrl>+<shift>+<f12>": "mic-typing-ctrl-shift-v",
-    "<ctrl>+<alt>+<f12>": "system-audio-to-console-and-file",
-    "<ctrl>+<alt>+<shift>+<f12>": "mic-plus-system-to-console-and-file",
+    # Distinct F-keys with single Ctrl modifier — no hotkey is a subset of
+    # another, so pynput.GlobalHotKeys can match them exclusively.
+    "<ctrl>+<f9>": "mic-typing-ctrl-v",
+    "<ctrl>+<f10>": "system-audio-to-console-and-file",
+    "<ctrl>+<f11>": "mic-plus-system-to-console-and-file",
 }
 
-STOP_HOTKEY = "<shift>+<f12>"
+STOP_HOTKEY = "<ctrl>+<f12>"
 
 HUMAN_READABLE_HOTKEY_HELP_LINES = [
-    "  Ctrl+F12              -> mic dictation, types into focused window",
-    "  Ctrl+Shift+F12        -> mic dictation (same; reserved for terminal paste mode)",
-    "  Ctrl+Alt+F12          -> system audio -> ~/vtt_recordings/*.txt",
-    "  Ctrl+Alt+Shift+F12    -> mic + system audio mixed -> ~/vtt_recordings/*.txt",
-    "  Shift+F12             -> stop whatever is running",
+    "  Ctrl+F9   -> mic dictation, types into focused window",
+    "  Ctrl+F10  -> system audio -> ~/vtt_recordings/*.txt",
+    "  Ctrl+F11  -> mic + system audio mixed -> ~/vtt_recordings/*.txt",
+    "  Ctrl+F12  -> stop whatever is running",
 ]
 
 
@@ -76,22 +76,50 @@ class WhisperStreamingHotkeyController:
 
     def on_mode_hotkey_pressed(self, requested_mode_label):
         with self.subprocess_state_lock:
-            if self.active_subprocess_or_none is not None:
+            # Same mode already running -> no-op.
+            if self.active_mode_label_or_none == requested_mode_label:
                 print(
-                    f"[start] already running mode "
-                    f"'{self.active_mode_label_or_none}' — press Shift+F12 to "
-                    f"stop before switching.",
+                    f"[start] mode '{requested_mode_label}' already running.",
                     flush=True,
                 )
                 return
+            # Different mode running -> transition: stop current, start new.
+            if self.active_subprocess_or_none is not None:
+                print(
+                    f"[transition] stopping '{self.active_mode_label_or_none}' "
+                    f"-> starting '{requested_mode_label}'",
+                    flush=True,
+                )
+                self._terminate_active_subprocess_holding_lock()
             launcher_path = LAUNCHER_PATHS_BY_MODE_LABEL[requested_mode_label]
-            print(f"\n[start] mode={requested_mode_label}", flush=True)
+            print(f"[start] mode={requested_mode_label}", flush=True)
             self.active_subprocess_or_none = subprocess.Popen(
                 [launcher_path],
                 # New process group so SIGTERM hits the whole pipeline.
                 preexec_fn=os.setsid,
             )
             self.active_mode_label_or_none = requested_mode_label
+
+    def _terminate_active_subprocess_holding_lock(self):
+        """Caller must hold self.subprocess_state_lock."""
+        if self.active_subprocess_or_none is None:
+            return
+        try:
+            os.killpg(
+                os.getpgid(self.active_subprocess_or_none.pid),
+                signal.SIGTERM,
+            )
+        except ProcessLookupError:
+            pass
+        try:
+            self.active_subprocess_or_none.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(
+                os.getpgid(self.active_subprocess_or_none.pid),
+                signal.SIGKILL,
+            )
+        self.active_subprocess_or_none = None
+        self.active_mode_label_or_none = None
 
     def on_stop_hotkey_pressed(self):
         with self.subprocess_state_lock:
@@ -103,22 +131,7 @@ class WhisperStreamingHotkeyController:
                 f"'{self.active_mode_label_or_none}'...",
                 flush=True,
             )
-            try:
-                os.killpg(
-                    os.getpgid(self.active_subprocess_or_none.pid),
-                    signal.SIGTERM,
-                )
-            except ProcessLookupError:
-                pass
-            try:
-                self.active_subprocess_or_none.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                os.killpg(
-                    os.getpgid(self.active_subprocess_or_none.pid),
-                    signal.SIGKILL,
-                )
-            self.active_subprocess_or_none = None
-            self.active_mode_label_or_none = None
+            self._terminate_active_subprocess_holding_lock()
             print("[stop] done.", flush=True)
 
     def run_until_interrupted(self):

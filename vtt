@@ -8,6 +8,9 @@
 # `vtt`.
 
 set -e
+# Restore terminal settings on any exit path (pynput's listener can leave the
+# controlling tty in a corrupted state when killed via Ctrl+C).
+trap 'stty sane' EXIT
 VTT_REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
 SERVER_PORT="${SERVER_PORT:-43007}"

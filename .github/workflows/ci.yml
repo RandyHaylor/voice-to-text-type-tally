@@ -135,8 +135,12 @@ jobs:
             exit 1
           }
           Write-Host "Using AutoHotkey at: $autoHotkeyExecutablePath"
-          & $autoHotkeyExecutablePath /validate windows\streaming_dictation.ahk
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "AutoHotkey script validation failed (exit $LASTEXITCODE)"
-            exit $LASTEXITCODE
+          $ahkProcess = Start-Process -FilePath $autoHotkeyExecutablePath `
+            -ArgumentList "/validate","windows\streaming_dictation.ahk" `
+            -Wait -PassThru -NoNewWindow
+          $validationExitCode = $ahkProcess.ExitCode
+          Write-Host "AutoHotkey /validate exit code: $validationExitCode"
+          if ($validationExitCode -ne 0) {
+            Write-Error "AutoHotkey script validation failed (exit $validationExitCode)"
+            exit $validationExitCode
           }

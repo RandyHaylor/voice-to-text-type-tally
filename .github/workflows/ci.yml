@@ -118,29 +118,82 @@ jobs:
       - name: Validate AutoHotkey script syntax
         shell: pwsh
         run: |
-          $candidatePaths = @(
-            "C:\AutoHotkeyV2\AutoHotkey64.exe",
-            "C:\AutoHotkeyV2\AutoHotkey32.exe"
-          )
-          $autoHotkeyExecutablePath = $null
-          foreach ($candidate in $candidatePaths) {
-            if (Test-Path $candidate) { $autoHotkeyExecutablePath = $candidate; break }
-          }
-          if (-not $autoHotkeyExecutablePath) {
+          $autoHotkeyExecutablePath = "C:\AutoHotkeyV2\AutoHotkey64.exe"
+          if (-not (Test-Path $autoHotkeyExecutablePath)) {
             $found = Get-ChildItem -Path "C:\AutoHotkeyV2" -Recurse -Filter "AutoHotkey*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
             if ($found) { $autoHotkeyExecutablePath = $found.FullName }
           }
-          if (-not $autoHotkeyExecutablePath) {
-            Write-Error "AutoHotkey executable not found in C:\AutoHotkeyV2"
-            exit 1
-          }
           Write-Host "Using AutoHotkey at: $autoHotkeyExecutablePath"
-          $ahkProcess = Start-Process -FilePath $autoHotkeyExecutablePath `
+          $ahkValidateProcess = Start-Process -FilePath $autoHotkeyExecutablePath `
             -ArgumentList "/validate","windows\streaming_dictation.ahk" `
             -Wait -PassThru -NoNewWindow
-          $validationExitCode = $ahkProcess.ExitCode
+          $validationExitCode = $ahkValidateProcess.ExitCode
           Write-Host "AutoHotkey /validate exit code: $validationExitCode"
           if ($validationExitCode -ne 0) {
             Write-Error "AutoHotkey script validation failed (exit $validationExitCode)"
             exit $validationExitCode
           }
+
+      - name: Install Ahk2Exe compiler
+        shell: pwsh
+        run: |
+          # Ahk2Exe is shipped as a separate GitHub release. Pull a known-good version.
+          $ahk2ExeVersion = "1.1.37.02"
+          $downloadUrl = "https://github.com/AutoHotkey/Ahk2Exe/releases/download/v$ahk2ExeVersion/Ahk2Exe$ahk2ExeVersion.zip"
+          $downloadZipPath = "$env:RUNNER_TEMP\ahk2exe.zip"
+          $extractDirectory = "C:\Ahk2Exe"
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $downloadZipPath -UseBasicParsing
+          Expand-Archive -Path $downloadZipPath -DestinationPath $extractDirectory -Force
+          Get-ChildItem $extractDirectory | Format-Table Name, Length
+
+      - name: Build streaming_dictation.exe with Ahk2Exe
+        shell: pwsh
+        run: |
+          $ahk2ExePath = "C:\Ahk2Exe\Ahk2Exe.exe"
+          if (-not (Test-Path $ahk2ExePath)) {
+            $found = Get-ChildItem -Path "C:\Ahk2Exe" -Recurse -Filter "Ahk2Exe*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) { $ahk2ExePath = $found.FullName }
+          }
+          $ahkV2BaseFile = "C:\AutoHotkeyV2\AutoHotkey64.exe"
+          $sourceAhkFile = "$PWD\windows\streaming_dictation.ahk"
+          $compiledExePath = "$PWD\windows\streaming_dictation.exe"
+          Write-Host "Compiling: $sourceAhkFile -> $compiledExePath"
+          $compileProcess = Start-Process -FilePath $ahk2ExePath `
+            -ArgumentList "/in",$sourceAhkFile,"/out",$compiledExePath,"/base",$ahkV2BaseFile `
+            -Wait -PassThru -NoNewWindow
+          $compileExitCode = $compileProcess.ExitCode
+          Write-Host "Ahk2Exe exit code: $compileExitCode"
+          if ($compileExitCode -ne 0) {
+            Write-Error "Ahk2Exe compilation failed (exit $compileExitCode)"
+            exit $compileExitCode
+          }
+          if (-not (Test-Path $compiledExePath)) {
+            Write-Error "Expected output file missing: $compiledExePath"
+            exit 1
+          }
+          $exeFileSize = (Get-Item $compiledExePath).Length
+          Write-Host "Built streaming_dictation.exe ($exeFileSize bytes)"
+
+      - name: Smoke test the compiled .exe (start, alive, kill)
+        shell: pwsh
+        run: |
+          # Launch the compiled .exe, verify the process stays alive briefly
+          # (i.e. doesn't crash on startup), then terminate it. Cannot do
+          # interactive hotkey/typing tests in a headless runner.
+          $compiledExePath = "$PWD\windows\streaming_dictation.exe"
+          Write-Host "Launching: $compiledExePath"
+          $runningExeProcess = Start-Process -FilePath $compiledExePath -PassThru
+          Start-Sleep -Seconds 3
+          if ($runningExeProcess.HasExited) {
+            Write-Error "Compiled .exe exited immediately (exit $($runningExeProcess.ExitCode))"
+            exit 1
+          }
+          Write-Host "Compiled .exe is alive after 3 seconds (PID $($runningExeProcess.Id))"
+          Stop-Process -Id $runningExeProcess.Id -Force
+          Write-Host "Smoke test passed."
+
+      - name: Upload streaming_dictation.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: streaming_dictation-windows-exe
+          path: windows/streaming_dictation.exe

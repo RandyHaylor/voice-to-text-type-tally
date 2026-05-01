@@ -19,10 +19,11 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: ""
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout (with submodules + LFS)
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+          lfs: true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -91,10 +92,11 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: ""
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout (with submodules + LFS)
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+          lfs: true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -137,10 +139,11 @@ jobs:
     env:
       CUDA_VISIBLE_DEVICES: ""
     steps:
-      - name: Checkout (with submodules)
+      - name: Checkout (with submodules + LFS)
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
+          lfs: true
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5

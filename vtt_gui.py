@@ -263,19 +263,84 @@ def is_whisper_streaming_server_process_running():
         return False
 
 
+def find_pid_listening_on_tcp_port_on_windows(port_number):
+    """Return the PID (string) of the process LISTENING on 127.0.0.1:port,
+    or None. Uses `netstat -ano` — no dependency on the deprecated wmic."""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano", "-p", "TCP"],
+            capture_output=True, text=True, timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    needle = ":" + str(port_number)
+    for line in result.stdout.splitlines():
+        if "LISTENING" not in line or needle not in line:
+            continue
+        parts = line.split()
+        # Format: Proto  Local  Foreign  State  PID
+        if len(parts) >= 5 and parts[-1].isdigit():
+            local_addr = parts[1]
+            if local_addr.endswith(needle):
+                return parts[-1]
+    return None
+
+
+def _windows_taskkill_pid_tree(pid_string):
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", pid_string],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+
 def kill_whisper_streaming_server_processes_on_windows():
-    """Kill every python process running our server runner script."""
-    process_ids = find_whisper_streaming_server_process_ids_on_windows()
-    for process_id_string in process_ids:
+    """Best-effort shutdown of the whisper_streaming server on Windows.
+    Three layers, all idempotent:
+      1. Kill whoever is LISTENING on SERVER_PORT (most reliable — direct).
+      2. Kill the cmd window we spawned with title 'vtt-server' (gets the
+         python child via /T).
+      3. Kill any python processes whose command line still references our
+         server scripts (catches stragglers; wmic-based, tolerant of failure).
+    """
+    port_listener_pid = find_pid_listening_on_tcp_port_on_windows(SERVER_PORT)
+    if port_listener_pid:
+        _windows_taskkill_pid_tree(port_listener_pid)
+
+    try:
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/FI", "WINDOWTITLE eq vtt-server*"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=3.0,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+
+    for process_id_string in find_whisper_streaming_server_process_ids_on_windows():
+        _windows_taskkill_pid_tree(process_id_string)
+
+
+def wait_for_tcp_port_free(host, port, timeout_seconds=5.0):
+    """Block until nothing is listening on host:port (i.e. a fresh bind
+    will succeed), or timeout. Returns True if port is free."""
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            subprocess.run(
-                ["taskkill", "/F", "/PID", process_id_string],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=3.0,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-            pass
+            probe.settimeout(0.2)
+            probe.connect((host, port))
+            probe.close()
+            time.sleep(0.15)
+            continue
+        except (ConnectionRefusedError, socket.timeout, OSError):
+            probe.close()
+            return True
+    return False
 
 
 def parse_transcript_line(raw_line_text):
@@ -442,22 +507,32 @@ class ModeRunner:
                 self._dispatch_transcript_text(text_or_none)
 
     def _dispatch_transcript_text(self, text):
-        # UI update
-        try:
-            self.on_transcript_text(text + " ")
-        except Exception:
-            pass
+        # whisper_streaming already emits the right leading whitespace per
+        # segment (a leading space before words, none before punctuation).
+        # Pass it through as-is and don't add our own — adding a trailing
+        # space here was producing doubles when the next segment also led
+        # with a space, and adding one before punctuation produced "Hello ."
+        if not text:
+            return
+        # UI update — suppressed in typing mode, otherwise the keyboard
+        # typer (which targets the focused window, often the GUI itself)
+        # would write the same text a second time, producing duplicates.
+        if not self.type_into_focused_window:
+            try:
+                self.on_transcript_text(text)
+            except Exception:
+                pass
         # File
         if self._save_file_handle_or_none is not None:
             try:
-                self._save_file_handle_or_none.write(text + " ")
+                self._save_file_handle_or_none.write(text)
                 self._save_file_handle_or_none.flush()
             except Exception:
                 pass
-        # Typing — leading space so successive emissions concatenate naturally.
+        # Typing — same: trust whisper_streaming's spacing.
         if self._keyboard_controller_or_none is not None:
             try:
-                self._keyboard_controller_or_none.type(" " + text)
+                self._keyboard_controller_or_none.type(text)
             except Exception:
                 pass
 
@@ -1267,13 +1342,22 @@ class VttGuiApplication:
             or is_whisper_streaming_server_process_running()
         ):
             self._on_stop_server_button_clicked()
-            # Give the kernel time to release the listen port before the
-            # new server tries to bind it. 1500ms is conservative; the
-            # actual TIME_WAIT socket release on Linux is typically
-            # ~1s for a freshly-killed listener.
-            self.tk_root.after(1500, self._start_server_async)
+            # Wait until the port is actually free before re-binding.
+            # Fixed sleeps race on Windows (10048) when the previous
+            # python child takes a moment to exit after taskkill.
+            def _start_when_port_is_free():
+                threading.Thread(
+                    target=self._wait_for_port_then_start_server,
+                    name="vtt-restart-wait",
+                    daemon=True,
+                ).start()
+            self.tk_root.after(200, _start_when_port_is_free)
         else:
             self._start_server_async()
+
+    def _wait_for_port_then_start_server(self):
+        wait_for_tcp_port_free(SERVER_HOST, SERVER_PORT, timeout_seconds=8.0)
+        self.tk_root.after(0, self._start_server_async)
 
     def _on_stop_server_button_clicked(self):
         # Use the same kill path as _on_window_close, but don't quit.
